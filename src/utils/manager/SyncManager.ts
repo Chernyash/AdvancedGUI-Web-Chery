@@ -86,11 +86,6 @@ async function querySyncKey(): Promise<string> {
 }
 
 export function openSyncPrompt() {
-  if (!licenseKey.value) {
-    licensePromptDoneAction.value = openSyncPrompt;
-    return;
-  }
-
   serverAddress.value = getCookie("server-address") || null;
   syncType.value = Number.parseInt(getCookie("sync-type") || "0");
   syncKey.value = null;
@@ -102,21 +97,7 @@ export function openSyncPrompt() {
     })
     .catch(exc => {
       const errorText = `Starting sync failed: ${exc.message || exc}`;
-      const licenseError =
-        errorText.toLocaleLowerCase().includes("licence") ||
-        errorText.toLocaleLowerCase().includes("license");
-      error(
-        errorText,
-        licenseError
-          ? {
-              label: "Change license key",
-              callback: () => {
-                licensePromptDoneAction.value = () => undefined;
-              }
-            }
-          : undefined
-      );
-
+      error(errorText);
       syncPromptOpen.value = false;
     });
 }
