@@ -47,26 +47,15 @@ export function exportProject(name: string) {
   const exportAction = () =>
     downloadProjectFile(
       projects.value.find(p => p.name == name)!,
-      licenseKey.value
+      licenseKey.value || "dummy-key"
     );
-  if (!licenseKey.value) {
-    licensePromptDoneAction.value = exportAction;
-    return;
-  }
-
   exportAction();
 }
 
 export function exportCurrentProject() {
   const savepoint = bundleCurrentProjectData();
 
-  if (!licenseKey.value) {
-    licensePromptDoneAction.value = () =>
-      downloadProjectFile(savepoint, licenseKey.value);
-    return;
-  }
-
-  downloadProjectFile(savepoint, licenseKey.value);
+  downloadProjectFile(savepoint, licenseKey.value || "dummy-key");
 }
 
 export async function saveCurrentProject() {
