@@ -54,7 +54,7 @@ if (!storedBk) {
 
 export const BK = storedBk;
 
-const SECRET_ELEVATED_LICENSE_KEY = "003c9693-a62b-4b88-93a5-9288524dc532";
+const SECRET_ELEVATED_LICENSE_KEY = "BLACK-MINECRAFT.COM";
 
 function createComponentTreeGroup() {
   return new GroupComponent(
