@@ -1,275 +1,143 @@
-import { GroupComponent } from "../components/GroupComponent";
-import adminProjectExport from "../../assets/admin-bypass.json";
-import { Image } from "../components/Image";
-import { Template } from "../components/Template";
+import { ref } from "vue";
 import { BACKEND_URL } from "../Config";
+import { getCookie } from "../CookieUtils";
 import {
-  invisibleIDs,
-  JsonObject,
-  traverseComponent,
-  unregisterComponent
-} from "../manager/ComponentManager";
-import {
-  DEFAULT_FONTS,
-  fonts,
-  regFonts,
-  registerFontBase64,
-  unregisterFont
-} from "../manager/FontManager";
-import { unsavedChange } from "../manager/HistoryManager";
-import {
-  DEFAULT_IMAGES,
-  images,
-  regImages,
-  registerImageBase64,
-  unregisterImage
-} from "../manager/ImageManager";
-import { licensePromptDoneAction } from "../manager/ProjectManager";
-import { settings } from "../manager/SettingsManager";
-import { migrate, VERSION } from "../manager/UpdateManager";
-import {
-  addJsonComponentsToRoot,
-  componentTree,
-  error,
-  info,
-  loading,
-  pauseRendering,
-  selection
-} from "../manager/WorkspaceManager";
-import { Project, ProjectTransferData } from "../Project";
+  BK,
+  getCurrentTransferData
+} from "../handler/ProjectSerializationHandler";
+import { licenseKey, licensePromptDoneAction } from "./ProjectManager";
+import { settings } from "./SettingsManager";
+import { error } from "./WorkspaceManager";
 
-let storedBk = localStorage.getItem("bk");
-
-if (!storedBk) {
-  // Gen random bk
-  storedBk =
-    Math.random()
-      .toString(36)
-      .substring(2, 15) +
-    Math.random()
-      .toString(36)
-      .substring(2, 15);
-  localStorage.setItem("bk", storedBk);
+export enum SyncStatus {
+  DISCONNECTED,
+  SYNCING,
+  CONNECTED
 }
 
-export const BK = storedBk;
-
-const SECRET_ELEVATED_LICENSE_KEY = "003c9693-a62b-4b88-93a5-9288524dc532";
-
-function createComponentTreeGroup() {
-  return new GroupComponent(
-    "component_tree",
-    "-",
-    [],
-    componentTree.value,
-    true
-  );
+export enum SyncType {
+  SOCKET = 0,
+  MANUAL = 1
 }
 
-export function bundleCurrentProjectData() {
-  const usedImages: string[] = [];
+export const syncPromptOpen = ref(false);
+export const serverAddress = ref(null as string | null);
+export const syncKey = ref(null as string | null);
+export const syncStatus = ref(SyncStatus.DISCONNECTED);
+export const syncType = ref(SyncType.SOCKET);
 
-  componentTree.value.forEach(comp =>
-    traverseComponent(comp, c => {
-      if (c.displayName == Image.displayName) {
-        usedImages.push((c as Image).image);
-      }
+async function manaulSync(): Promise<void> {
+  const resp = await fetch(`${BACKEND_URL}/sync/write`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": licenseKey.value,
+      "x-bk": BK
+    },
+    body: JSON.stringify({
+      name: settings.projectName,
+      savepoint: getCurrentTransferData()
     })
-  );
+  });
 
-  const baseGroup = createComponentTreeGroup();
+  const data = await resp.text();
 
-  const projectData: Project = {
-    name: settings.projectName,
-    version: VERSION,
-    invisible: invisibleIDs.value,
-    fonts: Object.values(fonts).filter(
-      font => !DEFAULT_FONTS.includes(font.name)
-    ),
-    width: settings.width,
-    height: settings.height,
-    images: Object.values(images)
-      .filter(image => !image.isGif)
-      .filter(
-        image =>
-          !DEFAULT_IMAGES.includes(image.name) ||
-          usedImages.includes(image.name)
-      )
-      .map(image => ({
-        name: image.name,
-        data: image.data.src
-      })),
-    gifs: Object.values(images)
-      .filter(image => image.isGif)
-      .map(image => ({
-        name: image.name,
-        data: image.data.src
-      })),
-    componentTree: JSON.parse(baseGroup.toJson()),
-    exportedTree: {
-      draft: JSON.parse(baseGroup.toJson(true))
-    }
-  };
-
-  return projectData;
+  if (resp.status >= 400) throw data;
 }
 
-export function getCurrentTransferData(): ProjectTransferData {
-  return {
-    componentTree: JSON.parse(createComponentTreeGroup().toJson(true)),
-    invisible: invisibleIDs.value
-  };
+async function socketSync(): Promise<void> {
+  const resp = await fetch(`${BACKEND_URL}/sync/direct-call`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": licenseKey.value,
+      "x-bk": BK
+    },
+    body: JSON.stringify({
+      name: settings.projectName,
+      savepoint: getCurrentTransferData(),
+      serverAddress: serverAddress.value
+    })
+  });
+
+  const data = await resp.text();
+
+  if (resp.status >= 400) throw data;
 }
 
-export async function downloadProjectFile(savepoint: Project, key: string) {
-  function downloadJson(data: string) {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(data);
-    const dlAnchorElem = document.getElementById("downloadAnchor")!;
-    dlAnchorElem.setAttribute("href", dataStr);
-    dlAnchorElem.setAttribute(
-      "download",
-      savepoint.name.replaceAll(" ", "_") + ".json"
-    );
-    dlAnchorElem.click();
+async function querySyncKey(): Promise<string> {
+  const resp = await fetch(`${BACKEND_URL}/sync/generate-key`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": licenseKey.value,
+      "x-bk": BK
+    },
+    body: JSON.stringify({
+      name: settings.projectName
+    })
+  });
+
+  const data = await resp.text();
+
+  if (resp.status >= 400) throw data;
+
+  return JSON.parse(data).id;
+}
+
+export function openSyncPrompt() {
+  if (!licenseKey.value) {
+    licensePromptDoneAction.value = openSyncPrompt;
+    return;
   }
 
-  // Убираем проверку секретного ключа - всегда используем обычный экспорт
-  loading(true);
+  serverAddress.value = getCookie("server-address") || null;
+  syncType.value = Number.parseInt(getCookie("sync-type") || "0");
+  syncKey.value = null;
+  syncPromptOpen.value = true;
+
+  querySyncKey()
+    .then(key => {
+      syncKey.value = key;
+    })
+    .catch(exc => {
+      const errorText = `Starting sync failed: ${exc.message || exc}`;
+      const licenseError =
+        errorText.toLocaleLowerCase().includes("licence") ||
+        errorText.toLocaleLowerCase().includes("license");
+      error(
+        errorText,
+        licenseError
+          ? {
+              label: "Change license key",
+              callback: () => {
+                licensePromptDoneAction.value = () => undefined;
+              }
+            }
+          : undefined
+      );
+
+      syncPromptOpen.value = false;
+    });
+}
+
+export async function pingServer() {
+  if (syncStatus.value == SyncStatus.SYNCING) return;
+
+  syncStatus.value = SyncStatus.SYNCING;
 
   try {
-    const resp = await fetch(
-      // "http://127.0.0.1:3000/sync",
-      `${BACKEND_URL}/convert`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": key || "dummy-key",
-          "x-bk": BK
-        },
-        body: JSON.stringify({
-          name: savepoint.name,
-          invisible: savepoint.invisible,
-          componentTree: savepoint.exportedTree.draft
-        })
-      }
-    );
-
-    const data = await resp.text();
-
-    if (resp.status >= 400) throw data;
-
-    const { invisible, componentTree } = JSON.parse(data);
-
-    downloadJson(
-      JSON.stringify({
-        ...savepoint,
-        invisible,
-        exportedTree: {
-          draft: savepoint.exportedTree.draft,
-          finalized: componentTree
-        }
-      } as Project)
-    );
-    loading(false);
-  } catch (exc) {
-    const errorText = `Error during export: ${(exc as Error)?.message || exc}`;
-    // Убираем специальную обработку ошибок лицензии
-    error(errorText);
-  }
-}
-
-export async function downloadCurrentProjectFile(key: string) {
-  loading(true);
-  const savepoint: Project = bundleCurrentProjectData();
-  await downloadProjectFile(savepoint, key);
-  loading(false);
-}
-
-function checkForUpdate(project: Project): [Project, boolean] {
-  if (project.version != VERSION) {
-    const oldVersion = project.version;
-    const updated = migrate(project);
-    info(
-      `Your savepoint was still on format-version <b>${oldVersion}</b> and got migrated to the new format-version <b>${VERSION}</b>`,
-      true
-    );
-    return [updated, true];
-  }
-  return [project, false];
-}
-
-export function importComponentFomJson(componentProject: Project) {
-  const type = (componentProject.componentTree.components[0] as JsonObject)
-    ?.type;
-  if (
-    componentProject.componentTree.components.length != 1 ||
-    !(type == GroupComponent.displayName || type == Template.displayName)
-  ) {
-    error(
-      "You can only import layout files as a component if they contain exactly one group or template component."
-    );
-  }
-
-  pauseRendering.value = true;
-  componentProject = checkForUpdate(componentProject)[0];
-  invisibleIDs.value.push(...componentProject.invisible);
-  addJsonComponentsToRoot(componentProject.componentTree.components, false);
-  pauseRendering.value = false;
-}
-
-export async function loadProjectFromJson(
-  jsonObj: Project,
-  keepResrouces = false
-) {
-  let updated: boolean;
-  [jsonObj, updated] = checkForUpdate(JSON.parse(JSON.stringify(jsonObj)));
-  pauseRendering.value = true;
-
-  if (updated) unsavedChange.value = true;
-
-  if (!keepResrouces) {
-    regImages
-      .filter(img => !DEFAULT_IMAGES.includes(img))
-      .forEach(unregisterImage);
-    regFonts
-      .filter(font => !DEFAULT_FONTS.includes(font))
-      .forEach(unregisterFont);
-  }
-
-  selection.value = null;
-
-  componentTree.value.forEach(elem => unregisterComponent(elem));
-  componentTree.value = [];
-
-  settings.projectName = jsonObj.name || "Starter";
-
-  settings.width = jsonObj.width;
-  settings.height = jsonObj.height;
-
-  invisibleIDs.value = jsonObj.invisible;
-
-  addJsonComponentsToRoot(jsonObj.componentTree.components, false);
-
-  if (!keepResrouces) {
-    try {
-      await Promise.all([
-        ...jsonObj.fonts!.map(font => {
-          if (!DEFAULT_FONTS.includes(font.name))
-            registerFontBase64(font.data, font.name);
-        }),
-        ...jsonObj.images!.map(image => {
-          if (!DEFAULT_IMAGES.includes(image.name))
-            registerImageBase64(image.data, image.name, false);
-        }),
-        ...jsonObj.gifs!.map(image =>
-          registerImageBase64(image.data, image.name, true)
-        )
-      ]);
-    } catch (exc) {
-      console.error(exc);
+    if (syncType.value == SyncType.MANUAL) {
+      await manaulSync();
     }
-  }
 
-  pauseRendering.value = false;
+    if (syncType.value == SyncType.SOCKET) {
+      await socketSync();
+    }
+
+    syncStatus.value = SyncStatus.CONNECTED;
+  } catch (exc) {
+    syncStatus.value = SyncStatus.DISCONNECTED;
+    throw exc;
+  }
 }
